@@ -38,35 +38,28 @@ extern "C" void _NativeShare_Share( const char* files[], int filesCount, const c
 {
 	NSMutableArray *items = [NSMutableArray new];
 	
-	// When there is a subject on iOS 7 or later, text is provided together with subject via a UNativeShareEmailItemProvider
-	// Credit: https://stackoverflow.com/a/29916845/2373034
+	// Handle subject and text with modern email provider
 	if( strlen( subject ) > 0 && CHECK_IOS_VERSION( @"7.0" ) )
 	{
 		UNativeShareEmailItemProvider *emailItem = [UNativeShareEmailItemProvider new];
 		emailItem.subject = [NSString stringWithUTF8String:subject];
 		emailItem.body = [NSString stringWithUTF8String:text];
-		
 		[items addObject:emailItem];
 	}
 	else if( strlen( text ) > 0 )
 		[items addObject:[NSString stringWithUTF8String:text]];
 	
-	// Credit: https://forum.unity.com/threads/native-share-for-android-ios-open-source.519865/page-13#post-6942362
+	// Modern URL handling with proper encoding
 	if( strlen( link ) > 0 )
 	{
 		NSString *urlRaw = [NSString stringWithUTF8String:link];
 		NSURL *url = [NSURL URLWithString:urlRaw];
 		if( url == nil )
 		{
-			// Try escaping the URL
 			if( CHECK_IOS_VERSION( @"9.0" ) )
 			{
-				url = [NSURL URLWithString:[urlRaw stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLHostAllowedCharacterSet]]];
-				if( url == nil )
-					url = [NSURL URLWithString:[urlRaw stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLFragmentAllowedCharacterSet]]];
+				url = [NSURL URLWithString:[urlRaw stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]]];
 			}
-			else
-				url = [NSURL URLWithString:[urlRaw stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
 		}
 		
 		if( url != nil )
@@ -75,28 +68,38 @@ extern "C" void _NativeShare_Share( const char* files[], int filesCount, const c
 			NSLog( @"Couldn't create a URL from link: %@", urlRaw );
 	}
 	
+	// Modern file handling with proper type checking
 	for( int i = 0; i < filesCount; i++ ) 
 	{
 		NSString *filePath = [NSString stringWithUTF8String:files[i]];
+		NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+		
+		// Check if it's an image
 		UIImage *image = [UIImage imageWithContentsOfFile:filePath];
 		if( image != nil )
+		{
 			[items addObject:image];
+		}
 		else
-			[items addObject:[NSURL fileURLWithPath:filePath]];
+		{
+			// For other file types, use file URL
+			[items addObject:fileURL];
+		}
 	}
 	
 	if( strlen( subject ) == 0 && [items count] == 0 )
 	{
 		NSLog( @"Share canceled because there is nothing to share..." );
 		UnitySendMessage( "NSShareResultCallbackiOS", "OnShareCompleted", "2" );
-		
 		return;
 	}
 	
+	// Modern activity view controller setup
 	UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
 	if( strlen( subject ) > 0 )
 		[activity setValue:[NSString stringWithUTF8String:subject] forKey:@"subject"];
 	
+	// Modern completion handler
 	void (^shareResultCallback)(UIActivityType activityType, BOOL completed, UIActivityViewController *activityReference) = ^void( UIActivityType activityType, BOOL completed, UIActivityViewController *activityReference )
 	{
 		NSLog( @"Shared to %@ with result: %d", activityType, completed );
@@ -109,17 +112,15 @@ extern "C" void _NativeShare_Share( const char* files[], int filesCount, const c
 			
 			UnitySendMessage( "NSShareResultCallbackiOS", "OnShareCompleted", result );
 			
-			// On iPhones, the share sheet isn't dismissed automatically when share operation is canceled, do that manually here
 			if( !completed && UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone )
-				[activityReference dismissViewControllerAnimated:NO completion:nil];
+				[activityReference dismissViewControllerAnimated:YES completion:nil];
 		}
-		else
-			NSLog( @"Share result callback is invoked multiple times!" );
 	};
 	
+	// Modern completion handler setup
 	if( CHECK_IOS_VERSION( @"8.0" ) )
 	{
-		__block UIActivityViewController *activityReference = activity; // About __block usage: https://gist.github.com/HawkingOuYang/b2c9783c75f929b5580c
+		__block UIActivityViewController *activityReference = activity;
 		activity.completionWithItemsHandler = ^( UIActivityType activityType, BOOL completed, NSArray *returnedItems, NSError *activityError )
 		{
 			if( activityError != nil )
@@ -129,29 +130,38 @@ extern "C" void _NativeShare_Share( const char* files[], int filesCount, const c
 			activityReference = nil;
 		};
 	}
-	else if( CHECK_IOS_VERSION( @"6.0" ) )
-	{
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-		__block UIActivityViewController *activityReference = activity;
-		activity.completionHandler = ^( UIActivityType activityType, BOOL completed )
-		{
-			shareResultCallback( activityType, completed, activityReference );
-			activityReference = nil;
-		};
-#pragma clang diagnostic pop
-	}
 	else
-		UnitySendMessage( "NSShareResultCallbackiOS", "OnShareCompleted", "" );
-	
-	UIViewController *rootViewController = UnityGetGLViewController();
-	if( UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone ) // iPhone
 	{
+		UnitySendMessage( "NSShareResultCallbackiOS", "OnShareCompleted", "" );
+	}
+	
+	// Modern presentation handling
+	UIViewController *rootViewController = UnityGetGLViewController();
+	if( UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone )
+	{
+		// iPhone presentation
+		if( CHECK_IOS_VERSION( @"13.0" ) )
+		{
+			activity.modalPresentationStyle = UIModalPresentationFullScreen;
+		}
 		[rootViewController presentViewController:activity animated:YES completion:nil];
 	}
-	else // iPad
+	else
 	{
-		UIPopoverController *popup = [[UIPopoverController alloc] initWithContentViewController:activity];
-		[popup presentPopoverFromRect:CGRectMake( rootViewController.view.frame.size.width / 2, rootViewController.view.frame.size.height / 2, 1, 1 ) inView:rootViewController.view permittedArrowDirections:0 animated:YES];
+		// iPad presentation with modern popover
+		if( CHECK_IOS_VERSION( @"13.0" ) )
+		{
+			activity.modalPresentationStyle = UIModalPresentationPopover;
+			UIPopoverPresentationController *popPC = activity.popoverPresentationController;
+			popPC.sourceView = rootViewController.view;
+			popPC.sourceRect = CGRectMake( rootViewController.view.frame.size.width / 2, rootViewController.view.frame.size.height / 2, 1, 1 );
+			popPC.permittedArrowDirections = 0;
+			[rootViewController presentViewController:activity animated:YES completion:nil];
+		}
+		else
+		{
+			UIPopoverController *popup = [[UIPopoverController alloc] initWithContentViewController:activity];
+			[popup presentPopoverFromRect:CGRectMake( rootViewController.view.frame.size.width / 2, rootViewController.view.frame.size.height / 2, 1, 1 ) inView:rootViewController.view permittedArrowDirections:0 animated:YES];
+		}
 	}
 }
